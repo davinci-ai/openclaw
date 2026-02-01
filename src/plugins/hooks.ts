@@ -14,6 +14,8 @@ import type {
   PluginHookBeforeAgentStartEvent,
   PluginHookBeforeAgentStartResult,
   PluginHookBeforeCompactionEvent,
+  PluginHookBeforeMediaUnderstandingEvent,
+  PluginHookBeforeMediaUnderstandingResult,
   PluginHookBeforeToolCallEvent,
   PluginHookBeforeToolCallResult,
   PluginHookGatewayContext,
@@ -48,6 +50,8 @@ export type {
   PluginHookMessageSendingEvent,
   PluginHookMessageSendingResult,
   PluginHookMessageSentEvent,
+  PluginHookBeforeMediaUnderstandingEvent,
+  PluginHookBeforeMediaUnderstandingResult,
   PluginHookToolContext,
   PluginHookBeforeToolCallEvent,
   PluginHookBeforeToolCallResult,
@@ -277,6 +281,30 @@ export function createHookRunner(registry: PluginRegistry, options: HookRunnerOp
   }
 
   // =========================================================================
+  // Media Hooks
+  // =========================================================================
+
+  /**
+   * Run before_media_understanding hook.
+   * Allows plugins to provide a transcript and skip built-in audio processing.
+   * Runs sequentially, merging transcript and skipAudio from all handlers.
+   */
+  async function runBeforeMediaUnderstanding(
+    event: PluginHookBeforeMediaUnderstandingEvent,
+    ctx: PluginHookMessageContext,
+  ): Promise<PluginHookBeforeMediaUnderstandingResult | undefined> {
+    return runModifyingHook<"before_media_understanding", PluginHookBeforeMediaUnderstandingResult>(
+      "before_media_understanding",
+      event,
+      ctx,
+      (acc, next) => ({
+        transcript: next.transcript ?? acc?.transcript,
+        skipAudio: next.skipAudio ?? acc?.skipAudio,
+      }),
+    );
+  }
+
+  // =========================================================================
   // Tool Hooks
   // =========================================================================
 
@@ -449,6 +477,8 @@ export function createHookRunner(registry: PluginRegistry, options: HookRunnerOp
     runMessageReceived,
     runMessageSending,
     runMessageSent,
+    // Media hooks
+    runBeforeMediaUnderstanding,
     // Tool hooks
     runBeforeToolCall,
     runAfterToolCall,

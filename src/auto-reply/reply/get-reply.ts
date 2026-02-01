@@ -12,6 +12,8 @@ import { DEFAULT_AGENT_WORKSPACE_DIR, ensureAgentWorkspace } from "../../agents/
 import { type OpenClawConfig, loadConfig } from "../../config/config.js";
 import { applyLinkUnderstanding } from "../../link-understanding/apply.js";
 import { applyMediaUnderstanding } from "../../media-understanding/apply.js";
+import { extractMediaUserText } from "../../media-understanding/format.js";
+import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
 import { defaultRuntime } from "../../runtime.js";
 import { resolveCommandAuthorization } from "../command-auth.js";
 import { SILENT_REPLY_TOKEN } from "../tokens.js";
@@ -116,9 +118,50 @@ export async function getReplyFromConfig(
   const finalized = finalizeInboundContext(ctx);
 
   if (!isFastTestEnv) {
+    // Plugin hook: let plugins provide a transcript before built-in media processing.
+    let skipBuiltinAudio = false;
+    const hookRunner = getGlobalHookRunner();
+    if (hookRunner?.hasHooks("before_media_understanding")) {
+      const mediaTypes = finalized.MediaTypes ?? (finalized.MediaType ? [finalized.MediaType] : []);
+      const mediaPaths = finalized.MediaUrls ?? (finalized.MediaUrl ? [finalized.MediaUrl] : []);
+      const hookResult = await hookRunner.runBeforeMediaUnderstanding(
+        {
+          mediaTypes,
+          mediaPaths,
+          body: finalized.Body,
+          metadata: {
+            channel: finalized.OriginatingChannel ?? finalized.Surface,
+            accountId: finalized.AccountId,
+          },
+        },
+        {
+          channelId: (finalized.OriginatingChannel ?? finalized.Surface ?? "").toLowerCase(),
+          accountId: finalized.AccountId,
+        },
+      );
+      if (hookResult?.transcript) {
+        finalized.Transcript = hookResult.transcript;
+        const userText = extractMediaUserText(finalized.CommandBody);
+        finalized.CommandBody = userText ?? hookResult.transcript;
+        finalized.RawBody = userText ?? hookResult.transcript;
+      }
+      if (hookResult?.skipAudio) {
+        skipBuiltinAudio = true;
+      }
+    }
+
+    const mediaCfg = skipBuiltinAudio
+      ? {
+          ...cfg,
+          tools: {
+            ...cfg.tools,
+            media: { ...cfg.tools?.media, audio: { ...cfg.tools?.media?.audio, enabled: false } },
+          },
+        }
+      : cfg;
     await applyMediaUnderstanding({
       ctx: finalized,
-      cfg,
+      cfg: mediaCfg,
       agentDir,
       activeModel: { provider, model },
     });

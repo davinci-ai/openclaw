@@ -386,6 +386,8 @@ export type PluginHookBeforeMediaUnderstandingEvent = {
 export type PluginHookBeforeMediaUnderstandingResult = {
   transcript?: string;
   skipAudio?: boolean;
+  /** If true, remove audio metadata from context so agent doesn't see audio attachments */
+  clearAudioMetadata?: boolean;
 };
 
 // Tool context

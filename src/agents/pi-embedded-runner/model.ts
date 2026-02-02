@@ -78,7 +78,13 @@ export function resolveModel(
       (entry) => normalizeProviderId(entry.provider) === normalizedProvider && entry.id === modelId,
     );
     if (inlineMatch) {
-      const normalized = normalizeModelCompat(inlineMatch as Model<Api>);
+      const resolved = { ...inlineMatch } as Model<Api>;
+      // Apply apiId mapping: use the actual API model ID if configured,
+      // allowing config-level model variants (e.g. k2p5-instant -> k2p5).
+      if ((inlineMatch as { apiId?: string }).apiId) {
+        resolved.id = (inlineMatch as { apiId?: string }).apiId!;
+      }
+      const normalized = normalizeModelCompat(resolved);
       return {
         model: normalized,
         authStorage,

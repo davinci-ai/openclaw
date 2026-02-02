@@ -18,6 +18,7 @@ export type ModelProviderAuthMode = "api-key" | "aws-sdk" | "oauth" | "token";
 export type ModelDefinitionConfig = {
   id: string;
   name: string;
+  apiId?: string;
   api?: ModelApi;
   reasoning: boolean;
   input: Array<"text" | "image">;

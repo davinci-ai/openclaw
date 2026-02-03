@@ -73,7 +73,9 @@ function createStreamFnWithExtraParams(
     return undefined;
   }
 
-  const streamParams: CacheRetentionStreamOptions = {};
+  const streamParams: CacheRetentionStreamOptions & {
+    thinking?: Record<string, unknown>;
+  } = {};
   if (typeof extraParams.temperature === "number") {
     streamParams.temperature = extraParams.temperature;
   }
@@ -83,6 +85,18 @@ function createStreamFnWithExtraParams(
   const cacheRetention = resolveCacheRetention(extraParams, provider);
   if (cacheRetention) {
     streamParams.cacheRetention = cacheRetention;
+  }
+
+  // Support for Kimi K2.5 thinking mode (Moonshot API)
+  // Allows enabling/disabling step-by-step reasoning
+  // https://platform.moonshot.ai/docs/guide/kimi-k2-5-quickstart
+  if (
+    extraParams.thinking &&
+    typeof extraParams.thinking === "object" &&
+    !Array.isArray(extraParams.thinking) &&
+    (provider === "moonshot" || provider === "kimi-coding")
+  ) {
+    streamParams.thinking = extraParams.thinking as Record<string, unknown>;
   }
 
   if (Object.keys(streamParams).length === 0) {

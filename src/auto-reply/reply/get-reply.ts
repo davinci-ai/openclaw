@@ -12,6 +12,8 @@ import { DEFAULT_AGENT_WORKSPACE_DIR, ensureAgentWorkspace } from "../../agents/
 import { type OpenClawConfig, loadConfig } from "../../config/config.js";
 import { applyLinkUnderstanding } from "../../link-understanding/apply.js";
 import { applyMediaUnderstanding } from "../../media-understanding/apply.js";
+import { extractMediaUserText } from "../../media-understanding/format.js";
+import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
 import { defaultRuntime } from "../../runtime.js";
 import { resolveCommandAuthorization } from "../command-auth.js";
 import { SILENT_REPLY_TOKEN } from "../tokens.js";
@@ -116,12 +118,111 @@ export async function getReplyFromConfig(
   const finalized = finalizeInboundContext(ctx);
 
   if (!isFastTestEnv) {
-    await applyMediaUnderstanding({
-      ctx: finalized,
-      cfg,
-      agentDir,
-      activeModel: { provider, model },
-    });
+    // Plugin hook: let plugins provide a transcript before built-in media processing.
+    let skipBuiltinAudio = false;
+    let clearedAudioMetadata = false;
+    const hookRunner = getGlobalHookRunner();
+    if (hookRunner?.hasHooks("before_media_understanding")) {
+      const mediaTypes = finalized.MediaTypes ?? (finalized.MediaType ? [finalized.MediaType] : []);
+      const mediaPaths = finalized.MediaUrls ?? (finalized.MediaUrl ? [finalized.MediaUrl] : []);
+      const hookResult = await hookRunner.runBeforeMediaUnderstanding(
+        {
+          mediaTypes,
+          mediaPaths,
+          body: finalized.Body,
+          metadata: {
+            channel: finalized.OriginatingChannel ?? finalized.Surface,
+            accountId: finalized.AccountId,
+          },
+        },
+        {
+          channelId: (finalized.OriginatingChannel ?? finalized.Surface ?? "").toLowerCase(),
+          accountId: finalized.AccountId,
+        },
+      );
+      if (hookResult?.transcript) {
+        finalized.Transcript = hookResult.transcript;
+        const userText = extractMediaUserText(finalized.CommandBody);
+        finalized.CommandBody = userText ?? hookResult.transcript;
+        finalized.RawBody = userText ?? hookResult.transcript;
+        // Replace <media:audio> placeholder in body fields so agent sees transcript text
+        const audioPlaceholder = /<media:audio>/gi;
+        if (finalized.Body) {
+          finalized.Body = finalized.Body.replace(audioPlaceholder, hookResult.transcript);
+        }
+        if (finalized.BodyForAgent) {
+          finalized.BodyForAgent = finalized.BodyForAgent.replace(
+            audioPlaceholder,
+            hookResult.transcript,
+          );
+        }
+        if (finalized.BodyForCommands) {
+          finalized.BodyForCommands = finalized.BodyForCommands.replace(
+            audioPlaceholder,
+            hookResult.transcript,
+          );
+        }
+      }
+      if (hookResult?.skipAudio) {
+        skipBuiltinAudio = true;
+      }
+      if (hookResult?.clearAudioMetadata) {
+        clearedAudioMetadata = true;
+        const audioExtensions = [".ogg", ".mp3", ".wav", ".m4a", ".aac", ".opus", ".flac"];
+        const isAudioPath = (p: string) =>
+          audioExtensions.some((ext) => p.toLowerCase().endsWith(ext));
+        const isAudioType = (t: string) => t.startsWith("audio/") || t === "audio";
+
+        // Strip audio entries from media fields so the agent doesn't see audio attachments
+        if (finalized.MediaTypes) {
+          const audioIndices = new Set(
+            finalized.MediaTypes.map((t, i) => (isAudioType(t) ? i : -1)).filter((i) => i >= 0),
+          );
+          finalized.MediaTypes = finalized.MediaTypes.filter((_, i) => !audioIndices.has(i));
+          if (finalized.MediaUrls) {
+            finalized.MediaUrls = finalized.MediaUrls.filter((_, i) => !audioIndices.has(i));
+          }
+          if (finalized.MediaPaths) {
+            finalized.MediaPaths = finalized.MediaPaths.filter((_, i) => !audioIndices.has(i));
+          }
+        }
+        if (finalized.MediaType && isAudioType(finalized.MediaType)) {
+          finalized.MediaType = undefined;
+        }
+        if (finalized.MediaUrl && isAudioPath(finalized.MediaUrl)) {
+          finalized.MediaUrl = undefined;
+        }
+        if (finalized.MediaPath && isAudioPath(finalized.MediaPath)) {
+          finalized.MediaPath = undefined;
+        }
+      }
+    }
+
+    const mediaCfg = skipBuiltinAudio
+      ? {
+          ...cfg,
+          tools: {
+            ...cfg.tools,
+            media: { ...cfg.tools?.media, audio: { ...cfg.tools?.media?.audio, enabled: false } },
+          },
+        }
+      : cfg;
+
+    // Skip media understanding entirely when plugin cleared all media (audio-only message)
+    const hasMedia =
+      (finalized.MediaTypes?.length ?? 0) > 0 ||
+      (finalized.MediaUrls?.length ?? 0) > 0 ||
+      finalized.MediaType ||
+      finalized.MediaUrl;
+
+    if (hasMedia || !clearedAudioMetadata) {
+      await applyMediaUnderstanding({
+        ctx: finalized,
+        cfg: mediaCfg,
+        agentDir,
+        activeModel: { provider, model },
+      });
+    }
     await applyLinkUnderstanding({
       ctx: finalized,
       cfg,

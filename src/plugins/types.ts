@@ -292,6 +292,7 @@ export type PluginHookName =
   | "message_received"
   | "message_sending"
   | "message_sent"
+  | "before_media_understanding"
   | "before_tool_call"
   | "after_tool_call"
   | "tool_result_persist"
@@ -372,6 +373,21 @@ export type PluginHookMessageSentEvent = {
   content: string;
   success: boolean;
   error?: string;
+};
+
+// before_media_understanding hook
+export type PluginHookBeforeMediaUnderstandingEvent = {
+  mediaTypes?: string[];
+  mediaPaths?: string[];
+  body?: string;
+  metadata?: Record<string, unknown>;
+};
+
+export type PluginHookBeforeMediaUnderstandingResult = {
+  transcript?: string;
+  skipAudio?: boolean;
+  /** If true, remove audio metadata from context so agent doesn't see audio attachments */
+  clearAudioMetadata?: boolean;
 };
 
 // Tool context
@@ -487,6 +503,13 @@ export type PluginHookHandlerMap = {
     event: PluginHookMessageSentEvent,
     ctx: PluginHookMessageContext,
   ) => Promise<void> | void;
+  before_media_understanding: (
+    event: PluginHookBeforeMediaUnderstandingEvent,
+    ctx: PluginHookMessageContext,
+  ) =>
+    | Promise<PluginHookBeforeMediaUnderstandingResult | void>
+    | PluginHookBeforeMediaUnderstandingResult
+    | void;
   before_tool_call: (
     event: PluginHookBeforeToolCallEvent,
     ctx: PluginHookToolContext,

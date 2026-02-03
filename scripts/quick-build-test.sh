@@ -45,7 +45,13 @@ log_step "Step 2: Building OpenClaw..."
 cd "$REPO_ROOT"
 
 log_info "Installing dependencies..."
-if [ -f "package-lock.json" ]; then
+if command -v pnpm > /dev/null 2>&1; then
+    pnpm install > /tmp/npm-install.log 2>&1 || {
+        log_error "pnpm install failed"
+        tail -20 /tmp/npm-install.log
+        exit 1
+    }
+elif [ -f "package-lock.json" ]; then
     npm ci > /tmp/npm-install.log 2>&1 || {
         log_error "npm ci failed"
         tail -20 /tmp/npm-install.log

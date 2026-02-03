@@ -3,11 +3,23 @@
 
 # Custom code directories
 src/custom/
-config/custom/
-scripts/custom/
+
+# Fork sync infrastructure (self-protecting)
+scripts/setup-fork.sh
+scripts/sync-upstream.sh
+scripts/resolve-conflicts.sh
+scripts/health-check.sh
+scripts/emergency-rollback.sh
+FORK_SYNC.md
+.sync-protected
+CUSTOM_CHANGES.md
+
+# Termux custom scripts
+scripts/termux-auth-widget.sh
+scripts/termux-quick-auth.sh
+scripts/termux-sync-widget.sh
 
 # Custom configuration files
-config/production.yaml
 config/custom.yaml
 .env.local
 

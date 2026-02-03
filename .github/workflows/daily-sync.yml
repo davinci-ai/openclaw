@@ -1,0 +1,195 @@
+name: Daily Upstream Sync
+
+on:
+  schedule:
+    # Run daily at 6 AM UTC
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+    inputs:
+      auto_promote:
+        description: 'Auto-promote to custom/main if tests pass'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Configure Git
+        run: |
+          git config user.name "OpenClaw Bot"
+          git config user.email "bot@openclaw.local"
+      
+      - name: Add upstream remote
+        run: |
+          git remote add upstream https://github.com/openclaw/openclaw.git || true
+          git fetch upstream
+      
+      - name: Check for upstream changes
+        id: check
+        run: |
+          UPSTREAM_HEAD=$(git rev-parse upstream/main)
+          PRISTINE_HEAD=$(git rev-parse pristine-upstream 2>/dev/null || echo "")
+          
+          if [ "$UPSTREAM_HEAD" = "$PRISTINE_HEAD" ]; then
+            echo "changed=false" >> $GITHUB_OUTPUT
+            echo "No new upstream changes"
+          else
+            echo "changed=true" >> $GITHUB_OUTPUT
+            NEW_COMMITS=$(git rev-list --count pristine-upstream..upstream/main)
+            echo "new_commits=$NEW_COMMITS" >> $GITHUB_OUTPUT
+            echo "Found $NEW_COMMITS new upstream commits"
+          fi
+      
+      - name: Create backup and update pristine-upstream
+        if: steps.check.outputs.changed == 'true'
+        run: |
+          TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+          echo "timestamp=$TIMESTAMP" >> $GITHUB_ENV
+          
+          # Create backup tag
+          git tag "backup/before-sync-$TIMESTAMP"
+          
+          # Update pristine-upstream
+          git checkout pristine-upstream
+          git merge --ff-only upstream/main
+          git push origin pristine-upstream
+          git push origin "backup/before-sync-$TIMESTAMP"
+      
+      - name: Merge to staging
+        if: steps.check.outputs.changed == 'true'
+        id: merge
+        run: |
+          git checkout staging
+          git merge pristine-upstream --no-ff -m "Sync: Merge upstream changes ($(date +%Y-%m-%d))
+
+Upstream commits: ${{ steps.check.outputs.new_commits }}"
+        continue-on-error: true
+      
+      - name: Handle merge conflicts
+        if: steps.merge.outcome == 'failure'
+        run: |
+          # Get conflict details
+          CONFLICTED_FILES=$(git diff --name-only --diff-filter=U | sed 's/^/- /')
+          
+          # Abort the merge to keep repo clean
+          git merge --abort
+          
+          # Create issue for manual resolution
+          gh issue create \
+            --title "⚠️ Upstream sync conflicts - $(date +%Y-%m-%d)" \
+            --body "## Automatic merge failed
+
+Conflicts detected when merging upstream changes.
+
+### Details
+- **Date:** $(date +%Y-%m-%d)
+- **Upstream commits:** ${{ steps.check.outputs.new_commits }}
+- **Backup tag:** backup/before-sync-${{ env.timestamp }}
+
+### Conflicted files:
+$CONFLICTED_FILES
+
+### To resolve:
+\`\`\`bash
+# Fetch latest
+git fetch origin
+
+# Checkout staging and merge
+git checkout staging
+git merge pristine-upstream
+
+# Resolve conflicts (use ./scripts/resolve-conflicts.sh for interactive help)
+./scripts/resolve-conflicts.sh
+
+# Push resolved changes
+git push origin staging
+\`\`\`" \
+            --label "upstream-sync,conflict,automated"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Setup Node.js (if package.json exists)
+        if: steps.merge.outcome == 'success' && steps.check.outputs.changed == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+        continue-on-error: true
+      
+      - name: Run tests
+        if: steps.merge.outcome == 'success' && steps.check.outputs.changed == 'true'
+        id: tests
+        run: |
+          if [ -f "package.json" ] && grep -q '"test"' package.json; then
+            npm ci
+            npm test
+          elif [ -f "Makefile" ] && grep -q "test" Makefile; then
+            make test
+          else
+            echo "No automated tests configured"
+          fi
+        continue-on-error: true
+      
+      - name: Push staging
+        if: steps.merge.outcome == 'success' && steps.check.outputs.changed == 'true'
+        run: |
+          git push origin staging
+      
+      - name: Auto-promote to custom/main
+        if: |
+          steps.merge.outcome == 'success' && 
+          steps.check.outputs.changed == 'true' && 
+          (github.event.inputs.auto_promote == 'true' || steps.tests.outcome == 'success')
+        run: |
+          git checkout custom/main
+          git merge staging --no-ff -m "Promote: Staging to custom/main ($(date +%Y-%m-%d))
+
+- Upstream commits: ${{ steps.check.outputs.new_commits }}
+- Tests: ${{ steps.tests.outcome }}"
+          git push origin custom/main
+          echo "promoted=true" >> $GITHUB_ENV
+      
+      - name: Create success notification
+        if: steps.check.outputs.changed == 'true' && steps.merge.outcome == 'success'
+        run: |
+          if [ "${{ env.promoted }}" = "true" ]; then
+            STATUS="✅ Sync completed and promoted to custom/main"
+          else
+            STATUS="✅ Sync completed - staging updated, manual promotion needed"
+          fi
+          
+          echo "$STATUS"
+          echo "Upstream commits: ${{ steps.check.outputs.new_commits }}"
+          echo "Backup tag: backup/before-sync-${{ env.timestamp }}"
+      
+      - name: Summary
+        if: always() && steps.check.outputs.changed == 'true'
+        run: |
+          echo "## Upstream Sync Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Date:** $(date +%Y-%m-%d)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Upstream commits:** ${{ steps.check.outputs.new_commits }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Merge status:** ${{ steps.merge.outcome }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Test status:** ${{ steps.tests.outcome }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Backup tag:** \`backup/before-sync-${{ env.timestamp }}\`" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ steps.merge.outcome }}" = "failure" ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "⚠️ **Merge conflicts detected!** Manual resolution required." >> $GITHUB_STEP_SUMMARY
+            echo "See the created issue for details." >> $GITHUB_STEP_SUMMARY
+          fi

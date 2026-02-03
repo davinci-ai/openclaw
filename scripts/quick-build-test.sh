@@ -45,11 +45,19 @@ log_step "Step 2: Building OpenClaw..."
 cd "$REPO_ROOT"
 
 log_info "Installing dependencies..."
-npm ci > /tmp/npm-install.log 2>&1 || {
-    log_error "npm install failed"
-    tail -20 /tmp/npm-install.log
-    exit 1
-}
+if [ -f "package-lock.json" ]; then
+    npm ci > /tmp/npm-install.log 2>&1 || {
+        log_error "npm ci failed"
+        tail -20 /tmp/npm-install.log
+        exit 1
+    }
+else
+    npm install > /tmp/npm-install.log 2>&1 || {
+        log_error "npm install failed"
+        tail -20 /tmp/npm-install.log
+        exit 1
+    }
+fi
 
 log_info "Building..."
 npm run build > /tmp/npm-build.log 2>&1 || {

@@ -1,0 +1,15 @@
+# Files and directories that should never be overwritten by upstream sync
+# These trigger warnings if missing after a merge
+
+# Custom code directories
+src/custom/
+config/custom/
+scripts/custom/
+
+# Custom configuration files
+config/production.yaml
+config/custom.yaml
+.env.local
+
+# Documentation
+CUSTOM_CHANGES.md

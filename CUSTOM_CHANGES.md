@@ -28,7 +28,7 @@ Update this file whenever you make custom changes.
 ### Fork Sync Infrastructure
 
 - `scripts/setup-fork.sh` - Initial fork setup script
-- `scripts/sync-upstream.sh` - Daily upstream sync script
+- `scripts/sync-upstream.sh` - Daily upstream sync script (includes post-sync rebuild + gateway restart)
 - `scripts/resolve-conflicts.sh` - Interactive conflict resolution
 - `scripts/health-check.sh` - Fork health verification
 - `scripts/emergency-rollback.sh` - Disaster recovery script

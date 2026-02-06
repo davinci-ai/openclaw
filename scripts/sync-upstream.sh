@@ -67,7 +67,7 @@ if ! git remote | grep -q "^upstream$"; then
 fi
 
 # Step 1: Fetch upstream
-log_step "1/7: Fetching from upstream..."
+log_step "1/8: Fetching from upstream..."
 if ! git fetch "$UPSTREAM_REMOTE"; then
     log_error "Failed to fetch from upstream"
     exit 1
@@ -75,7 +75,7 @@ fi
 log_info "✓ Fetched upstream"
 
 # Step 2: Check if there are new changes
-log_step "2/7: Checking for new upstream changes..."
+log_step "2/8: Checking for new upstream changes..."
 UPSTREAM_HEAD=$(git rev-parse upstream/main)
 PRISTINE_HEAD=$(git rev-parse pristine-upstream 2>/dev/null || echo "")
 
@@ -101,13 +101,13 @@ if [ "$AUTO_MODE" = false ]; then
 fi
 
 # Step 3: Create backup tags
-log_step "3/7: Creating backup tags..."
+log_step "3/8: Creating backup tags..."
 BACKUP_TAG="backup/before-sync-$TIMESTAMP"
 git tag "$BACKUP_TAG"
 log_info "✓ Created backup tag: $BACKUP_TAG"
 
 # Step 4: Update pristine-upstream branch
-log_step "4/7: Updating pristine-upstream branch..."
+log_step "4/8: Updating pristine-upstream branch..."
 git checkout pristine-upstream
 
 # Try fast-forward first
@@ -125,7 +125,7 @@ git push "$ORIGIN_REMOTE" pristine-upstream
 log_info "✓ Pushed pristine-upstream to origin"
 
 # Step 5: Merge to staging
-log_step "5/7: Merging to staging branch..."
+log_step "5/8: Merging to staging branch..."
 git checkout staging
 
 # Create backup tag for staging
@@ -162,7 +162,7 @@ git push "$ORIGIN_REMOTE" staging
 log_info "✓ Pushed staging to origin"
 
 # Step 6: Run tests
-log_step "6/7: Running tests..."
+log_step "6/8: Running tests..."
 
 TEST_FAILED=false
 
@@ -201,7 +201,7 @@ if [ "$TEST_FAILED" = true ]; then
 fi
 
 # Step 7: Promote to custom/main
-log_step "7/7: Promoting to custom/main..."
+log_step "7/8: Promoting to custom/main..."
 
 if [ "$AUTO_MODE" = true ]; then
     # In auto mode, only promote if tests passed
@@ -243,6 +243,70 @@ fi
 # Push all backup tags
 git push "$ORIGIN_REMOTE" --tags
 
+# Step 8: Rebuild dist and restart gateway
+PROMOTED=false
+if [ "$AUTO_MODE" = true ] || [[ "${CONFIRM:-}" == "yes" ]]; then
+    PROMOTED=true
+fi
+
+if [ "$PROMOTED" = true ]; then
+    log_step "8/8: Rebuilding dist and restarting gateway..."
+
+    # Ensure we're on custom/main for the build
+    git checkout custom/main 2>/dev/null
+
+    # Install deps if needed (in case upstream added new dependencies)
+    if [ -f "pnpm-lock.yaml" ]; then
+        log_info "Installing dependencies..."
+        pnpm install --frozen-lockfile 2>&1 | tail -3 | tee -a "$LOG_FILE" || {
+            log_warn "pnpm install --frozen-lockfile failed, trying without..."
+            pnpm install 2>&1 | tail -3 | tee -a "$LOG_FILE"
+        }
+    fi
+
+    # Rebuild dist
+    log_info "Building dist from custom/main..."
+    if pnpm build 2>&1 | tail -5 | tee -a "$LOG_FILE"; then
+        log_info "✓ dist rebuilt successfully"
+
+        # Verify custom changes are in the build
+        if grep -rq "apiId" dist/ 2>/dev/null; then
+            log_info "✓ Custom changes (apiId) verified in build"
+        else
+            log_error "✗ Custom changes (apiId) NOT found in build!"
+            log_error "  The build may have regressed. Check for merge conflicts in:"
+            log_error "  - src/config/zod-schema.core.ts"
+            log_error "  - src/config/types.models.ts"
+            log_error "  - src/agents/pi-embedded-runner/model.ts"
+        fi
+
+        # Restart gateway if running as a service
+        OPENCLAW_PROFILE="${OPENCLAW_PROFILE:-claudia}"
+        if launchctl list 2>/dev/null | grep -q "ai.openclaw.${OPENCLAW_PROFILE}"; then
+            log_info "Restarting ${OPENCLAW_PROFILE} gateway..."
+            PLIST="$HOME/Library/LaunchAgents/ai.openclaw.${OPENCLAW_PROFILE}.plist"
+            launchctl bootout "gui/$(id -u)/ai.openclaw.${OPENCLAW_PROFILE}" 2>/dev/null || true
+            sleep 2
+            launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>/dev/null || true
+            sleep 3
+
+            # Verify gateway health
+            if openclaw --profile "$OPENCLAW_PROFILE" health 2>/dev/null; then
+                log_info "✓ Gateway restarted and healthy"
+            else
+                log_warn "Gateway may still be starting up. Check: openclaw --profile $OPENCLAW_PROFILE health"
+            fi
+        else
+            log_info "No running gateway service found for profile ${OPENCLAW_PROFILE}. Skipping restart."
+        fi
+    else
+        log_error "✗ Build failed! Gateway will continue running the previous build."
+        log_error "  Fix build issues and run: pnpm build && openclaw --profile claudia gateway restart"
+    fi
+else
+    log_step "8/8: Skipping rebuild (custom/main not promoted)"
+fi
+
 # Summary
 echo ""
 log_info "=== Sync Complete ==="
@@ -251,8 +315,10 @@ echo "Summary:"
 echo "  - Upstream commits merged: $NEW_COMMITS"
 echo "  - pristine-upstream: updated"
 echo "  - staging: updated and tested"
-if [ "$AUTO_MODE" = true ] || [[ "${CONFIRM:-}" == "yes" ]]; then
+if [ "$PROMOTED" = true ]; then
     echo "  - custom/main: updated"
+    echo "  - dist: rebuilt"
+    echo "  - gateway: restarted"
 else
     echo "  - custom/main: NOT updated (manual promotion needed)"
 fi

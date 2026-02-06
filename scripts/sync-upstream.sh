@@ -88,7 +88,7 @@ NEW_COMMITS=$(git rev-list --count pristine-upstream..upstream/main 2>/dev/null 
 log_info "Found $NEW_COMMITS new upstream commit(s)"
 echo ""
 echo "Recent upstream commits:"
-git log --oneline --color=always pristine-upstream..upstream/main | head -10
+git log --oneline --color=always pristine-upstream..upstream/main -10
 echo ""
 
 # In manual mode, ask for confirmation
@@ -307,6 +307,51 @@ else
     log_step "8/8: Skipping rebuild (custom/main not promoted)"
 fi
 
+# Step 9: Send Telegram notification
+NOTIFY_PROFILE="${OPENCLAW_PROFILE:-claudia}"
+NOTIFY_TARGET="${OPENCLAW_NOTIFY_TARGET:-8318019490}"
+NOTIFY_CHANNEL="${OPENCLAW_NOTIFY_CHANNEL:-telegram}"
+
+if [ "$PROMOTED" = true ]; then
+    log_step "9: Sending update notification via ${NOTIFY_CHANNEL}..."
+
+    # Get top 10 notable upstream changes (skip chore/docs commits for brevity)
+    NOTABLE_CHANGES=$(git log --oneline "pristine-upstream~${NEW_COMMITS}..pristine-upstream" \
+        --grep="feat\|fix\|breaking" --regexp-ignore-case \
+        --format="• %s" 2>/dev/null | head -10)
+
+    if [ -z "$NOTABLE_CHANGES" ]; then
+        NOTABLE_CHANGES=$(git log --oneline "pristine-upstream~${NEW_COMMITS}..pristine-upstream" \
+            --format="• %s" 2>/dev/null | head -10)
+    fi
+
+    # Get current version
+    CURRENT_VERSION=$(node -e "console.log(require('./package.json').version)" 2>/dev/null || echo "unknown")
+
+    # Build notification message
+    NOTIFY_MSG="🦞 OpenClaw Fork Updated
+
+📦 Version: ${CURRENT_VERSION}
+📊 Upstream commits merged: ${NEW_COMMITS}
+📅 Date: ${DATE}
+
+Notable changes:
+${NOTABLE_CHANGES}
+
+✅ dist rebuilt
+✅ Gateway restarted and healthy"
+
+    # Send via openclaw message
+    if openclaw --profile "$NOTIFY_PROFILE" message send \
+        --channel "$NOTIFY_CHANNEL" \
+        --target "$NOTIFY_TARGET" \
+        --message "$NOTIFY_MSG" 2>/dev/null; then
+        log_info "✓ Notification sent via ${NOTIFY_CHANNEL}"
+    else
+        log_warn "Failed to send notification. Gateway may not be ready yet."
+    fi
+fi
+
 # Summary
 echo ""
 log_info "=== Sync Complete ==="
@@ -319,6 +364,7 @@ if [ "$PROMOTED" = true ]; then
     echo "  - custom/main: updated"
     echo "  - dist: rebuilt"
     echo "  - gateway: restarted"
+    echo "  - notification: sent"
 else
     echo "  - custom/main: NOT updated (manual promotion needed)"
 fi
